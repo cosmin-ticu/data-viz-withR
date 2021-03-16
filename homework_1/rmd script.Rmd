@@ -1,0 +1,121 @@
+---
+title: "Data Viz 2 - Homework 1"
+author: "Cosmin Catalin Ticu"
+date: "3/16/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+```
+
+Load the nycflights13 package and check what kind of datasets exist in the package, then create a copy of flights dataset into a data.table object, called flight_data.
+
+```{r, message=FALSE, warning=FALSE}
+library(data.table)
+library(nycflights13)
+library(lubridate)
+library(ggplot2)
+# for the last question
+library(cowplot)
+library(rnaturalearth)
+library(googleway)
+library(rgeos)
+library(rnaturalearthdata)
+library(ggspatial)
+library(sf)
+library(ggrepel)
+
+flight_data <- data.table(nycflights13::flights)
+
+str(flight_data)
+```
+
+Which destination had the lowest avg arrival delay from LGA with minimum 100 flight to that destination?
+
+```{r}
+temp <- flight_data[origin == 'LGA', list(number_of_flights = .N, 
+                                  mean_arrival_delay = mean(arr_delay, na.rm = T)), 
+            by = dest][order(mean_arrival_delay)]
+temp[number_of_flights > 100,][1]
+```
+
+Which destination's flights were the most on time (avg arrival delay closest to zero) from LGA with minimum 100 flight to that destination?
+
+```{r}
+q2 <- temp[number_of_flights > 100, 
+           list(dest, mean_arrival_delay, number_of_flights, 
+                gicu = abs(mean_arrival_delay))][order(gicu)]
+q2[, list(dest, number_of_flights, mean_arrival_delay)][1]
+
+# correct because average arrival delay is actually negative 
+# yet still closest to zero in absolute value (as seen in the gicu column above)
+```
+
+Who is the manufacturer of the plane, which flights the most to CHS destination?
+
+```{r}
+q3_temp <- flight_data[dest == 'CHS', list(number_flights = .N), 
+                       by = list(tailnum, dest)][order(-number_flights)]
+
+flight_data_planes <- data.table(nycflights13::planes)
+
+merge(q3_temp, 
+      flight_data_planes[, list(tailnum, 
+                                manufacturer)])[order(-number_flights)][1]
+```
+
+Which airline (carrier) flow the most by distance?
+
+```{r}
+q4_temp <- data.table(nycflights13::airlines)
+
+merge(flight_data[, list(total_distance_flown = sum(distance)), 
+            by = carrier][order(-total_distance_flown)][1], q4_temp)
+
+```
+
+Plot the monthly number of flights with 20+ mins arrival delay!
+
+```{r}
+q5_temp <- flight_data[arr_delay > 20, list(date = make_date(year, month))]
+ggplot(q5_temp, aes(x = date)) + geom_bar()
+```
+
+Plot the departure delay of flights going to IAH and the related day's wind speed on a scaterplot! Is there any association between the two variables? Try adding a linear model.
+
+```{r,message=FALSE, warning=FALSE}
+flights_weather <- data.table(nycflights13::weather)
+
+q6_temp <- flight_data[dest == 'IAH', 
+                       list(dep_delay, origin, dest, year, month, day)]
+
+agg_weather <- flights_weather[, list(mean_wind_speed = mean(wind_speed)), 
+                               by = list(origin, year, month, day)]
+
+q6_answer <- merge(q6_temp, agg_weather)
+
+ggplot(q6_answer, aes(dep_delay, mean_wind_speed)) + 
+  geom_point() + 
+  geom_smooth(method = 'lm')
+```
+
+Plot the airports as per their geolocation on a world map, by mapping the number flights going to that destination to the size of the symbol!
+
+```{r}
+map <- ne_countries(returnclass = "sf")
+
+flight_airports <- data.table(nycflights13::airports)
+geo_flight_data <- merge(flight_data[, list(number_of_flights = .N), by = dest], 
+                         flight_airports[, list(faa, lat, lon)], 
+                         by.x = "dest", by.y = "faa")
+
+# To answer this question, the following resource was used
+# https://www.r-spatial.org/r/2018/10/25/ggplot2-sf.html
+
+ggplot(map) + 
+  geom_sf() + 
+  geom_point(data = geo_flight_data, aes(lon,lat, size = number_of_flights))
+```
+
