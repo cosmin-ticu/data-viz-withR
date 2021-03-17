@@ -119,3 +119,24 @@ ggplot(map) +
   geom_point(data = geo_flight_data, aes(lon,lat, size = number_of_flights))
 ```
 
+Misi's alternative answer
+
+```{r, message=FALSE, warning=FALSE}
+worldmap <- map_data('world')
+ggplot() +
+  geom_polygon(
+    data = worldmap, 
+    aes(x = long, y = lat, group = group), 
+    fill = 'gray', color = 'black') +
+  geom_point(
+    data = merge(
+      airports, 
+      flight_data[, .(flights = .N), by = .(faa = dest)], 
+      by = 'faa'), 
+    aes(lon, lat, size = flights)) +
+  theme_bw() +
+  theme(legend.position = 'top') +
+  xlab('') + ylab('') + 
+  coord_fixed(1.3)
+
+```
