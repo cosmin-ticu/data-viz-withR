@@ -1,0 +1,454 @@
+---
+title: "Term Assignment DV2 - Global Movie Snapshot Analysis"
+author: "Cosmin Catalin Ticu"
+date: "4/7/2021"
+output:   
+  prettydoc::html_pretty:
+    theme: cayman
+---
+
+# Introduction
+
+This markdown file was created by Cosmin Catalin Ticu for "Data Visualization 2" course of the CEU Business Analytics 2020-2021 cohort.
+
+This dataset was gathered from kaggle.com, an online data mining & analytics portal with open-access content. 
+
+The data was collected through webscraping the IMDb website and picking 220 most popular (country diversity-weighted) movies for each year between 1986 and 2016, thus bringing the movies count to 6600 titles. 
+
+Various measures such as budget, gross revenue, runtime, leading star, producer etc. were scraped alongside movie titles. Measures such as profit, economic rating and cost per minute of runtime were computed by the analyst
+
+Details on data extraction, variable naming and assigned values are available here:
+https://www.kaggle.com/danielgrijalvas/movies
+
+The goal of this analysis is to provide insights into the global movie industry by leveraging a webscraped snapshot from IMDb spanning 1986 to 2016 movies.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                      cache = T,
+                      message = F,
+                      warning = F)
+```
+
+```{r}
+library(data.table) # for data manipulation
+library(ggplot2) # plot basis
+library(gganimate) #
+library(transformr) # glue type of syntax
+library(animation)
+library(CoordinateCleaner) # import coordinates for all countries
+library(dplyr) # import %>% 
+library(tmaptools) # access openstreetmap API for unmatching locations
+library(ggiraph) # for tooltip customization
+```
+
+# Data cleaning & manipulation
+
+First, we will load in the data from the GitHub repo and initialize a dataframe of the countries so that we can gather geolocations for plotting maps.
+
+```{r}
+movies <- read.csv("https://raw.githubusercontent.com/cosmin-ticu/data-viz-withR/main/term_project/movies.csv")
+
+countries <- as.data.frame(unique(movies$country))
+names(countries) <- "country"
+```
+
+We will correct some country names according to nomenclature changes and failed states. This is an arbitrary designation and does not represent the researcher's political views.
+
+```{r}
+movies$country <- gsub('Hong Kong', 'China', movies$country)
+
+movies$country <- gsub('Republic of Macedonia', 'Macedonia', movies$country)
+
+movies$country <- gsub('West Germany', 'Germany', movies$country)
+
+movies$country <- gsub('Soviet Union', 'Russia', movies$country)
+
+movies$country <- gsub('Federal Republic of Yugoslavia', 'Serbia', movies$country)
+```
+
+We will load in the world data from the ggplot2 package and compute the centroid of each country for easy labeling.
+
+```{r}
+worldmap <- map_data('world')
+
+world.lab.data <- worldmap %>%
+  group_by(region) %>%
+  summarise(long = mean(long), lat = mean(lat))
+
+movies <- as.data.table(merge(movies, world.lab.data, by.x = 'country', by.y = 'region', all.x = T))
+```
+
+One aspect worthwhile mentioning about the data is that some movies do not have data on their production budget as it was not available on their IMDb page at the time.
+
+The following code creates new variables of interest for the visualizations and analysis that will be made.
+* Budget as percent of revenue - a practical way to measure if the movie was financially successful i.e. actually brought in more earnings than what was spent on the production.
+* Cost per minute of runtime - we often hear about animated movies costing a lot per minute of production.
+* Profit - a simple calculation between gross revenue and budget
+* Economic success rating - this variable alleviates the usage of the budget_percent_rev variable as the titles without a designated budget (or with a type in the budget) do not receive an economic success rating.
+* Decade - a more aggregate measure than year as the dataset is quite sparse, containing only a few hundred movies per year.
+
+```{r}
+movies[, `:=` ( # dplyr::mutate
+  budget_percent_rev = budget / gross,
+  cost_minute_runtime = budget / runtime,
+  profit = gross - budget,
+  year = as.integer(year)
+)]
+
+movies <- movies %>% 
+  mutate(rating_econ_success = case_when(budget_percent_rev > 1 ~ "Bomb",
+                                         budget_percent_rev >= 0.9 ~ "Break-even",
+                                         budget_percent_rev > 0.5 ~ "Profitable",
+                                         budget_percent_rev >= 0.001 ~ "Hit",
+                                         budget_percent_rev < 0.001 ~ "N/A Budget"
+  ))
+
+movies <- movies %>% 
+  mutate(decade = case_when(year > 2009 ~ "2010s",
+                                         year > 1999 ~ "2000s",
+                                         year > 1989 ~ "1990s",
+                                         year <= 1989 ~ "1980s"
+  ))
+```
+
+# EDA
+
+## What is the geographic representation of this movie dataset and can we observe some patterns across the globe?
+
+The first part of exploratory data analysis (EDA) concerns the global aspect of our movie industry snapshot. To get a better idea of the distribution of movies, we turn to a world map.
+
+```{r}
+world_movie_map_base <- movies[, list(runtime = mean(runtime), revenue = mean(gross), movie_count = .N), 
+                               by = list(country)]
+
+world_movie_map <- merge(worldmap, world_movie_map_base, by.x = 'region', by.y = 'country', all.x = T )
+
+world_movie_map <- world_movie_map[order(world_movie_map$order), ]
+
+ggplot(world_movie_map, aes(long, lat)) +
+  geom_polygon(aes(group = group, fill = movie_count), color = 'black') +
+  coord_quickmap() +
+  theme_void() +
+  scale_fill_continuous(type = 'viridis') +
+  labs(fill = 'Count of Movies') +
+  theme(legend.position = 'top', legend.key.width = unit(.5, 'inch'))
+```
+
+We can see a dataset that is almost entirely dominated by US-produced movies. As usual, Hollywood prevails. However, we will not give up just yet. Let us take a look at the same map, but now plotting the average movie revenue across the 1980s, 1990s, 2000s and 2010s on a global level. Will we notice any differences? One would assume that Hollywood would still prevail...
+
+```{r}
+movie_map <- movies[, list(runtime = mean(runtime), 
+                           avg_revenue = mean(gross), 
+                           count = .N,
+                           sum_revenue = sum(gross),
+                           avg_cost_minute_runtime = mean(cost_minute_runtime)), 
+                    by = list(long, lat, country, decade)]
+ggplot() +
+  geom_polygon(
+    data = worldmap, 
+    aes(x = long, y = lat, group = group), 
+    fill = 'gray', color = 'black') +
+  geom_point(
+    data = movie_map, 
+    aes(long, lat, size = avg_revenue, color = avg_revenue)) +
+  theme_void() +
+  theme(legend.position = 'none') +
+  xlab('') + ylab('') +
+  coord_fixed(1.3) +
+  transition_states(movie_map$decade) +
+  labs(title = 'Global Average Movie Gross Revenue per Decade',
+       subtitle = '{closest_state}') +
+  scale_color_continuous(
+    low = "blue",
+    high = "red",
+    na.value = "grey50",
+    aesthetics = "color")
+```
+
+The story painted by graph above shows us that Hollywood hasn't and still doesn't prevail in terms of average movie gross revenue. In fact, the saying "the more, the merrier" does not seem to apply in the case of this dataset. With more American movies in the dataset comes the chance they some of them will be low-budget and low-revenue. We will explore the topic of box-office bombs and box-office hits in later graphs.
+
+We zoom into our map and observe the European continent (well, EU + EEA).
+
+```{r}
+europeanUnion <- c("Austria","Belgium","Bulgaria","Croatia","Cyprus",
+                   "Czech Republic","Denmark","Estonia","Finland","France",
+                   "Germany","Greece","Hungary","Ireland","Italy","Latvia",
+                   "Lithuania","Luxembourg","Malta","Netherlands","Poland",
+                   "Portugal","Romania","Slovakia","Slovenia","Spain",
+                   "Sweden","United Kingdom","Switzerland")
+
+europemap <- map_data('world', region = europeanUnion)
+
+# Compute the centroid as the mean longitude and lattitude
+# Used as label coordinate for country's names
+europe.lab.data <- europemap %>%
+  group_by(region) %>%
+  summarise(long = mean(long), lat = mean(lat))
+
+europe_movie_map_base <- movies[, list(runtime = mean(runtime), revenue = mean(gross)), 
+                                by = list(country)]
+
+europe_movie_map <- merge(europemap, europe_movie_map_base, 
+                          by.x = 'region', by.y = 'country', all.x = T )
+
+europe_movie_map <- europe_movie_map[order(europe_movie_map$order), ]
+
+europe_movie_map$tooltips <- paste("In", europe_movie_map$region, 
+                                   "the average movie runtime is", 
+                                   round(europe_movie_map$runtime), "minutes")
+
+p <- ggplot(europe_movie_map, aes(long, lat)) +
+    geom_polygon_interactive(aes(fill = runtime, group = group,
+                                 tooltip = tooltips), color = 'black') +
+  coord_map("albers",  at0 = 45.5, lat1 = 29.5) +
+  geom_text(aes(label = region), data = europe.lab.data,  size = 3, hjust = 0.5, color = 'black') +
+  theme_void() +
+  scale_fill_gradient(
+    low = "yellow",
+    high = "red",
+    na.value = "grey50",
+    aesthetics = "fill") 
+
+ggiraph(ggobj = p)
+
+```
+
+It appears that we have Malta as an outlier on our graph. We can exclude it to see the distribution of runtimes better.
+
+```{r, echo=FALSE}
+europeanUnion <- c("Austria","Belgium","Bulgaria","Croatia","Cyprus",
+                   "Czech Republic","Denmark","Estonia","Finland","France",
+                   "Germany","Greece","Hungary","Ireland","Italy","Latvia",
+                   "Lithuania","Luxembourg","Netherlands","Poland",
+                   "Portugal","Romania","Slovakia","Slovenia","Spain",
+                   "Sweden","United Kingdom","Switzerland")
+
+europemap <- map_data('world', region = europeanUnion)
+
+# Compute the centroid as the mean longitude and lattitude
+# Used as label coordinate for country's names
+europe.lab.data <- europemap %>%
+  group_by(region) %>%
+  summarise(long = mean(long), lat = mean(lat))
+
+europe_movie_map_base <- movies[, list(runtime = mean(runtime), revenue = mean(gross)), 
+                                by = list(country)]
+
+europe_movie_map <- merge(europemap, europe_movie_map_base, 
+                          by.x = 'region', by.y = 'country', all.x = T )
+
+europe_movie_map <- europe_movie_map[order(europe_movie_map$order), ]
+
+europe_movie_map$tooltips <- paste("In", europe_movie_map$region, 
+                                   "the average movie runtime is", 
+                                   round(europe_movie_map$runtime), "minutes")
+
+p <- ggplot(europe_movie_map, aes(long, lat)) +
+    geom_polygon_interactive(aes(fill = runtime, group = group,
+                                 tooltip = tooltips), color = 'black') +
+  coord_map("albers",  at0 = 45.5, lat1 = 29.5) +
+  geom_text(aes(label = region), data = europe.lab.data,  size = 3, hjust = 0.5, color = 'black') +
+  theme_void() +
+  scale_fill_gradient(
+    low = "yellow",
+    high = "red",
+    na.value = "grey50",
+    aesthetics = "fill") 
+
+ggiraph(ggobj = p)
+
+```
+
+From the graph above, we can see that Italy, the Netherlands and Sweden top the charts in terms of long movies, spanning 2 hours on average. On the other hand, Poland trails the group with the shortest average movies at just one and at half hours.
+
+Moving away from geographical characteristics, we are also identifying some movies that really stand out either due to their budget, gross revenue or just sheer financial success (i.e. blockbusters and/or box-office bombs).
+
+## What does the distribution of movies with regards to their financial and cultural success look like in this dataset? Can we identify some outlying movies (bombs & hits)?
+
+To answer this question, we can build an interactive scatterplot of all the movies in the dataset. Try hovering your mouse over these dots to find out their title, budget, runtime and genre. You will notice that once a dot is selected, others are also highlighted. That allows us to see all the movies belonging to the same category as the chosen one, allowing us to compare the selected movie's performance in its own genre. Can you identify some of the outliers? I bet there's "Avatar" somewhere in those.
+
+```{r}
+movies_scatter <- movies
+
+movies_scatter$tooltips <- paste(movies_scatter$name,'(',movies_scatter$year,'-',
+                                 movies_scatter$genre,')', 'had a budget of', 
+                                 scales::dollar(round(movies_scatter$budget)), 'USD')
+
+p <- ggplot(data = movies_scatter, 
+            aes(score, gross, color = rating_econ_success, 
+                tooltip = tooltips, data_id = genre)) +
+  geom_point(size = 2) +
+  theme_bw()+
+  ylab('Gross Revenue (USD)') + xlab('IMDb Score') +
+  theme(legend.position = 'top') + 
+  labs(color='') +
+  geom_point_interactive() +
+  scale_y_continuous(labels = scales::dollar) +
+  scale_x_continuous(limits = c(0,10), breaks = c(0,2,4,6,8,10)) +
+  scale_color_viridis_d()
+
+girafe(ggobj = p, options = list(opts_hover()))
+```
+
+We can see some of our favorite titles at the top, movies that have significantly disrupted cinema, such as "Avatar", "Star Wars" (arguably the best one), "Titanic" and "The Dark Knight". This represent Hollywood designation of "Box-Office Hits". What is extremely surprising is that "Shawshank Redemption", the highest rated movie on IMDb holds only a "profitable" title, having racked in relatively low profits. It might be a classic case of being too far ahead of its time...
+
+Speaking of Box-Office Bombs, a nice addition to this graph (if time and expertise allowed) would be to add a onclick action through ggiraph in order to filter for the 5 type of financial success defined in this study. This would make it easier to get to the Box-Office Bombs like "Twilight" and "Tangled". For now, you will have to believe me that they are there.
+
+Moving away from individual financial success, we are also interested in the financial performance of the global movie industry throughout the past 4 decades.
+
+## How have movie budgets and gross revenues evolved throughout the years? Have there been moments in history when we were producing much too expensive movies for the profits they were racking in?
+
+To answer this question, we turn to a racing line chart, built interactively so that we can observe the average movie's budget and gross revenue evolve throughout the 1986 to 2016 period.
+
+```{r}
+summary_movies <- movies[, list(runtime = mean(runtime), 
+                           avg_revenue = mean(gross), 
+                           avg_budget = mean(budget),
+                           count = .N,
+                           sum_revenue = sum(gross),
+                           avg_cost_minute_runtime = mean(cost_minute_runtime)), 
+                         by = list(year)]
+
+colors_summary_movies <- c("Avg. Budget" = "orange3", "Avg. Gross Revenue" = "green4")
+
+ggplot(summary_movies, aes(x = year))+
+  geom_line(aes(y = avg_budget, 
+                color = 'Avg. Budget'), size = 2)+
+  scale_y_continuous('USD',
+                     labels = scales::dollar) +
+  geom_line(aes(y = avg_revenue, 
+                color = 'Avg. Gross Revenue'), size = 2)+
+  theme_bw()+
+  scale_x_continuous('Production Year',
+                     limits = c(1985, 2017), 
+                     breaks = c(1985,1990,1995,2000,2005,2010,2015)) +
+  labs(title = 'Global Average Budget and Revenue Trends from 1986 to 2016', 
+       color = "Legend") +
+  scale_color_manual(values = colors_summary_movies) +
+  theme(legend.position = 'bottom') +
+  transition_reveal(year, keep_last = T)
+```
+
+The answer to the above question comes easily, but is difficult to attribute to any trend or cause. The late 90s saw a massive spike in production budgets, one that closed in on the gap between gross revenues and spending. It could have been caused by extremely expensive CGI effects, or as a counterattack to the host of great TV shows trying to steal mainstream cinema's thunder. One thing is for certain, since then we've been able to better hold off on producing much too expensive movies that cannot be covered by revenues. One would hope the cinematography industry is not going anywhere for a long time, so we can hope that these trends will be sustained.
+
+## Lastly, on the topic of genre performance and profitability, how have the genres performed throughout the past 4 decades in terms of average IMDb scores and gross revenue? Can we rank them accordingly?
+
+### To answer the scoring-related part of the question, we turn to a racing bar chart.
+
+Preparing the baseline data for the racing bar chart.
+
+```{r}
+baseline_genres_agg <- movies[, list(avg_score = mean(score),
+                                    avg_revenue = mean(gross),
+                                    avg_budget = mean(budget),
+                                    avg_profit = mean(profit)),
+                             by = list(year, genre)]
+
+tidy_aproach_genres_bars <- baseline_genres_agg %>%
+  group_by(year) %>%
+  mutate(rank = rank(-avg_score),
+         Value_rel = avg_score/avg_score[rank==1]) %>%
+  group_by(genre) %>% 
+  filter(rank <= 5) %>%
+  arrange(year, -rank) %>% 
+  ungroup()
+```
+
+We aim to create a racing bar chart according to the x axis.
+
+```{r}
+racing_bars_tidy_static <- 
+  ggplot(tidy_aproach_genres_bars, aes(fill = genre)) +  
+  aes(xmin = 0 ,  
+      xmax = avg_score) +  
+  aes(ymin = rank - .45,  
+      ymax = rank + .45,  
+      y = rank) +  
+  facet_wrap(~ year) +  
+  geom_rect(alpha = .7) +  
+  scale_x_continuous(  
+    limits = c(-2, 9),  
+    breaks = c(0, 2, 4, 6, 8)) +  
+  scale_fill_viridis_d() +
+  geom_text(col = "gray13",  
+            hjust = "right",  
+            aes(label = genre),
+            x = 0) +  
+  scale_y_reverse() +  
+  labs(fill = NULL) +  
+  labs(x = 'IMDb Score') +  
+  labs(y = "") +
+  theme_bw() +
+  theme(legend.position = 'none')
+
+racing_bars_tidy_dynamic <- racing_bars_tidy_static + 
+  facet_null() +
+  scale_x_continuous(limits = c(-1, 10))+  
+  geom_text(x = 9 , y = -5,
+            aes(label = as.character(year)),
+            size = 16, col = "black")+
+  aes(group = genre)+
+  transition_time(year) +
+  labs(title = 'Global Average IMDb Score Trends across Genres', 
+       subtitle = "The 1986 to 2016 Fight for Top Ranking")
+
+animate(racing_bars_tidy_dynamic, nframes = 400)
+```
+
+It is hard to draw conclusions from this interactive graphic, as it seems that genres have been fighting their way to the top of the score leaderboard since forever and no  clear winner has yet to come out on top. While it is hard to draw conclusions for more than a few years, it is worthwhile to inspect that SCI-FI does not appear in the ranking at all until the late 90s, while biographies have kept up a consistent fight for the top score ranking for the past 4 decades. The complete absence of the family genre either speaks a lot for the movie culture that we encourage nowadays or for the sheer terribleness of "Family" movies...
+
+### We will attempt to convey the same story about revenue using the same approach of a racing bar chart.
+
+Preparing the baseline data for the racing bar chart.
+
+```{r}
+baseline_genres_agg_rev <- movies[, list(avg_score = mean(score),
+                                    avg_revenue = mean(gross),
+                                    avg_budget = mean(budget),
+                                    avg_profit = mean(profit)),
+                             by = list(year, genre)]
+
+tidy_aproach_genres_bars_rev <- baseline_genres_agg_rev %>%
+  group_by(year) %>%
+  mutate(rank = rank(-avg_revenue),
+         Value_rel = avg_revenue/avg_revenue[rank==1],
+         Value_lbl = paste0(" ",scales::dollar(round(avg_revenue)))) %>%
+  group_by(genre) %>% 
+  filter(rank <= 5) %>% 
+  ungroup()
+```
+
+We aim to create a racing bar chart (using tiles) by flipping axes.
+
+```{r}
+# revenue race on y axis
+
+static_plot <- ggplot(tidy_aproach_genres_bars_rev, aes(x = rank, group = genre, 
+                                       fill = as.factor(genre), color = as.factor(genre))) +
+  geom_tile(aes(y = avg_revenue/2,
+                height = avg_revenue,
+                width = 0.75), alpha = 0.8, color = NA) +
+  geom_text(aes(y = 0, label = paste(genre, " ")), vjust = 0.2, hjust = 1) +
+  geom_text(aes(y=avg_revenue*1.5,label = Value_lbl, hjust=0)) +
+  coord_flip(clip = "off", expand = FALSE) +
+  scale_y_continuous(labels = scales::dollar) +
+  scale_x_reverse() +
+  guides(color = FALSE, fill = FALSE)+
+  theme_minimal()+
+  theme(axis.text.x = element_blank(),
+        axis.text.y=element_blank(),
+        axis.title.y=element_blank(),
+        axis.title.x=element_blank(),
+        panel.border=element_blank(),
+        panel.grid.major=element_blank(),
+        panel.grid.minor=element_blank(),
+        plot.margin = margin(2, 2, 2, 2, "cm"))
+
+dynamic_plot <- static_plot + transition_states(year) + 
+  labs(title = 'Average Gross Revenue per Year : {closest_state}', subtitle  =  "Top Genres")
+
+animate(dynamic_plot,nframes = 300)
+
+```
+
+This last graph is more of an attempt as some workarounds had to be employed and the graph still does not function as well as expected. The main workaround concerns dividing the y axis values by 2 in order to reduce the distance of the tile from the origin. Nonetheless, the interactive graph shows something important, which is that animation movies have ranked in the top genres by gross revenue consistently since the 90s. With increasing computer graphics and power, consumers have seen a lot more animated movies and, it appears, that consumers have subsequently gone on to watch those movies to a great extent. Looking at the gap between animation movies and the rest of the categories for the last few years, one would wonder how much larger this gap will grow as computational power is only getting cheaper and demand, especially for anime, is growing significantly.
